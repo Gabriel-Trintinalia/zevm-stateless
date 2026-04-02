@@ -1,6 +1,6 @@
-# zevm-stateless Hive consume-rlp client
+# zevm-stateless ere-server
 #
-# Build stage: compile the hive-rlp binary
+# Build stage: compile the ere-server binary
 FROM debian:bookworm-slim AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -46,8 +46,19 @@ WORKDIR /src
 COPY zevm-stateless/ .
 COPY zevm/ /zevm
 
-# Build the hive-rlp binary (ReleaseFast for container use)
-RUN zig build hive-rlp -Doptimize=ReleaseFast
+# Workarounds for two Zig 0.15.1 Linux/amd64 issues when building under emulation:
+# 1. shuffleWithIndex panic in build_runner — shuffle only randomises dep-traversal
+#    order; removing it is safe and makes the build deterministic.
+# 2. Options step: faccessat returns ENOSYS (38) under QEMU/Rosetta amd64 emulation.
+#    Treat error.Unexpected the same as error.FileNotFound so the file is recreated
+#    rather than propagating the error.
+RUN grep -v "rand.shuffle" /usr/local/zig/lib/compiler/build_runner.zig \
+    > /tmp/build_runner_patched.zig \
+    && sed -i 's/error\.FileNotFound => {/error.FileNotFound, error.Unexpected => {/' \
+    /usr/local/zig/lib/std/Build/Step/Options.zig
+
+# Build the ere-server binary (ReleaseFast for container use)
+RUN zig build --build-runner /tmp/build_runner_patched.zig ere-server -Doptimize=ReleaseFast
 
 # Runtime stage
 FROM debian:bookworm-slim
@@ -58,8 +69,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=build /usr/local/lib/libmcl.so* /usr/local/lib/
 RUN ldconfig
-COPY --from=build /src/zig-out/bin/hive-rlp /hive-rlp
+COPY --from=build /src/zig-out/bin/ere-server /ere-server
 
-EXPOSE 8545
+EXPOSE 50051
 
-ENTRYPOINT ["/hive-rlp"]
+ENTRYPOINT ["/ere-server"]

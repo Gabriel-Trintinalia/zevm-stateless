@@ -1,0 +1,2 @@
+# Base image needs no source files — exclude everything.
+*

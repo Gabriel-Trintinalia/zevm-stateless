@@ -693,6 +693,39 @@ pub fn build(b: *std.Build) void {
     ssz_decode_mod.addImport("input", input_mod);
     ssz_decode_mod.addImport("rlp_decode", rlp_decode_mod);
 
+    // ---------------------------------------------------------------------------
+    // ere-server — standalone Twirp HTTP/1.1 server for the ZkvmService interface
+    //
+    // Receives SSZ-encoded StatelessInput via protobuf field 1, executes the block
+    // using the stateless executor, and returns the result as JSON public_values.
+    //
+    // Usage: ere-server [port]   (default port 50051)
+    // ---------------------------------------------------------------------------
+    const ere_server_exe = b.addExecutable(.{
+        .name = "ere-server",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ere_server/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "executor", .module = executor_mod },
+                .{ .name = "ssz_decode", .module = ssz_decode_mod },
+                .{ .name = "main_allocator", .module = main_allocator_mod },
+            },
+        }),
+    });
+    ere_server_exe.addIncludePath(.{ .cwd_relative = crypto_include });
+    ere_server_exe.linkSystemLibrary("secp256k1");
+    ere_server_exe.linkSystemLibrary("ssl");
+    ere_server_exe.linkSystemLibrary("crypto");
+    ere_server_exe.linkSystemLibrary("c");
+    ere_server_exe.linkSystemLibrary("m");
+    ere_server_exe.addObjectFile(.{ .cwd_relative = libblst_path });
+    addMcl(ere_server_exe, is_linux, libmcl_path);
+    b.installArtifact(ere_server_exe);
+    const ere_server_step = b.step("ere-server", "Build and install the ere-server");
+    ere_server_step.dependOn(b.getInstallStep());
+
     // ssz_output — SSZ output serializer (src/stateless/ssz_output.zig)
     const ssz_output_mod = b.createModule(.{
         .root_source_file = b.path("src/stateless/ssz_output.zig"),

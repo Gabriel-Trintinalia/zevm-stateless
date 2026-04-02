@@ -1,7 +1,15 @@
-# zevm-stateless Hive consume-rlp client
+# zevm-stateless build base
 #
-# Build stage: compile the hive-rlp binary
-FROM debian:bookworm-slim AS build
+# Pre-built toolchain image shared by all zevm-stateless binaries.
+# Contains: Debian bookworm + build tools + Zig 0.15.1 + libblst + libmcl
+#
+# Build:
+#   docker build -f docker/Dockerfile.base -t zevm-build-base:latest .
+#
+# Then each binary Dockerfile starts with:
+#   FROM zevm-build-base:latest AS build
+
+FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         wget xz-utils ca-certificates git cmake make \
@@ -41,25 +49,3 @@ RUN git clone --depth=1 https://github.com/herumi/mcl.git /tmp/mcl && \
     ldconfig && \
     cp -r ../include/mcl /usr/local/include/ && \
     rm -rf /tmp/mcl
-
-WORKDIR /src
-COPY zevm-stateless/ .
-COPY zevm/ /zevm
-
-# Build the hive-rlp binary (ReleaseFast for container use)
-RUN zig build hive-rlp -Doptimize=ReleaseFast
-
-# Runtime stage
-FROM debian:bookworm-slim
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        libsecp256k1-dev libssl-dev libc++1 \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=build /usr/local/lib/libmcl.so* /usr/local/lib/
-RUN ldconfig
-COPY --from=build /src/zig-out/bin/hive-rlp /hive-rlp
-
-EXPOSE 8545
-
-ENTRYPOINT ["/hive-rlp"]
