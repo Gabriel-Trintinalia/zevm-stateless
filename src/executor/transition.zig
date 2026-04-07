@@ -639,10 +639,14 @@ pub fn transitionWithContext(
         }
 
         // 1d. Transaction gas limit cannot exceed remaining block gas allowance.
-        // This catches both "tx.gas > gas_limit" (single tx too large) and
-        // "cumulative_gas + tx.gas > gas_limit" (block gas exhausted mid-block).
-        if (tx.gas > env.gas_limit - cumulative_gas) {
-            return error.TxGasLimitExceedsBlockLimit;
+        // Pre-Amsterdam: tx.gas == block_gas_used, so this check is exact.
+        // Amsterdam+: tx.gas = regular + state, but block_gas_used = max(regular, state),
+        // which can be much smaller than tx.gas for state-dominant txs. Skip the
+        // pre-execution check here; the overflow is detected post-execution below (step 5).
+        if (!primitives.isEnabledIn(spec, .amsterdam)) {
+            if (tx.gas > env.gas_limit - cumulative_gas) {
+                return error.TxGasLimitExceedsBlockLimit;
+            }
         }
 
         // 1e. Type-3 blob pre-checks (EIP-4844 / EIP-7594).
@@ -907,6 +911,13 @@ pub fn transitionWithContext(
 
         // 5. Build receipt
         cumulative_gas += exec_result.block_gas_used;
+        // Amsterdam+: block_gas_used = max(regular, state), which is only known
+        // post-execution. Reject the block immediately if this tx overflows the limit.
+        if (primitives.isEnabledIn(spec, .amsterdam)) {
+            if (cumulative_gas > env.gas_limit) {
+                return error.TxGasLimitExceedsBlockLimit;
+            }
+        }
         cumulative_receipt_gas += exec_result.gas_used;
 
         const status: u8 = if (exec_result.status == .Success) 1 else 0;
