@@ -734,14 +734,15 @@ pub fn build(b: *std.Build) void {
     if (b.args) |extra_args| run_zkevm_tests_cmd.addArgs(extra_args);
     run_zkevm_tests_step.dependOn(&run_zkevm_tests_cmd.step);
 
-    // zig build fetch-zkevm-fixtures — download zkevm@v0.3.2 fixtures
-    const fetch_zkevm_step = b.step("fetch-zkevm-fixtures", "Download zkevm@v0.3.2 execution-spec-tests fixtures");
+    // zig build fetch-zkevm-fixtures — download zkevm@v0.3.3 fixtures
+    const fetch_zkevm_step = b.step("fetch-zkevm-fixtures", "Download zkevm@v0.3.3 execution-spec-tests fixtures");
     const fetch_zkevm_cmd = b.addSystemCommand(&.{
         "sh", "-c",
-        "mkdir -p spec-tests/fixtures/zkevm && " ++
-            "echo 'Downloading zkevm@v0.3.2 fixtures...' && " ++
+        "rm -rf spec-tests/fixtures/zkevm && " ++
+            "mkdir -p spec-tests/fixtures/zkevm && " ++
+            "echo 'Downloading zkevm@v0.3.3 fixtures...' && " ++
             "curl -fL " ++
-            "https://github.com/ethereum/execution-spec-tests/releases/download/zkevm%40v0.3.2/fixtures_zkevm.tar.gz " ++
+            "https://github.com/ethereum/execution-spec-tests/releases/download/zkevm%40v0.3.3/fixtures_zkevm.tar.gz " ++
             "| tar xz --strip-components=1 -C spec-tests/fixtures/zkevm/ && " ++
             "echo 'Done. Fixtures extracted to spec-tests/fixtures/zkevm/'",
     });
