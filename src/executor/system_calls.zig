@@ -190,3 +190,112 @@ pub fn applyPostBlockCalls(
         runSystemCall(ctx, instructions, precompiles, sc_addr, &.{}, chain_id);
     }
 }
+
+pub const PostBlockRequestBytes = struct {
+    /// Raw return bytes from the EIP-7002 system contract (76 bytes × n withdrawals).
+    withdrawal_requests: []const u8,
+    /// Raw return bytes from the EIP-7251 system contract (116 bytes × n consolidations).
+    consolidation_requests: []const u8,
+};
+
+/// Like applyPostBlockCalls but captures and returns the raw output bytes from
+/// each system contract so the caller can compute the EIP-7685 requests_hash.
+/// Caller owns the returned slices (allocated with `alloc`).
+pub fn applyPostBlockCallsCapture(
+    alloc: std.mem.Allocator,
+    ctx: anytype,
+    instructions: *handler_mod.Instructions,
+    precompiles: *handler_mod.Precompiles,
+    spec: primitives.SpecId,
+    chain_id: u64,
+) PostBlockRequestBytes {
+    if (!primitives.isEnabledIn(spec, .prague)) return .{ .withdrawal_requests = &.{}, .consolidation_requests = &.{} };
+    return .{
+        .withdrawal_requests = runSystemCallCapture(alloc, ctx, instructions, precompiles, EIP7002_ADDRESS, &.{}, chain_id),
+        .consolidation_requests = runSystemCallCapture(alloc, ctx, instructions, precompiles, EIP7251_ADDRESS, &.{}, chain_id),
+    };
+}
+
+/// Like runSystemCall but returns a caller-owned copy of the return data.
+/// Returns an empty slice on any error or if the contract is not deployed.
+fn runSystemCallCapture(
+    alloc: std.mem.Allocator,
+    ctx: anytype,
+    instructions: *handler_mod.Instructions,
+    precompiles: *handler_mod.Precompiles,
+    target: input.Address,
+    calldata: []const u8,
+    chain_id: u64,
+) []const u8 {
+    const SYSTEM_CALL_GAS: u64 = 30_000_000 + 21_000;
+
+    const account_load = ctx.journaled_state.loadAccount(target) catch {
+        ctx.journaled_state.discardTx();
+        return &.{};
+    };
+    if (std.mem.eql(u8, &account_load.data.info.code_hash, &primitives.KECCAK_EMPTY)) {
+        ctx.journaled_state.discardTx();
+        return &.{};
+    }
+
+    const saved_nonce = ctx.cfg.disable_nonce_check;
+    const saved_bal = ctx.cfg.disable_balance_check;
+    const saved_fee = ctx.cfg.disable_fee_charge;
+    const saved_basefee = ctx.cfg.disable_base_fee;
+    const saved_block_gas = ctx.cfg.disable_block_gas_limit;
+    ctx.cfg.disable_nonce_check = true;
+    ctx.cfg.disable_balance_check = true;
+    ctx.cfg.disable_fee_charge = true;
+    ctx.cfg.disable_base_fee = true;
+    ctx.cfg.disable_block_gas_limit = true;
+    defer {
+        ctx.cfg.disable_nonce_check = saved_nonce;
+        ctx.cfg.disable_balance_check = saved_bal;
+        ctx.cfg.disable_fee_charge = saved_fee;
+        ctx.cfg.disable_base_fee = saved_basefee;
+        ctx.cfg.disable_block_gas_limit = saved_block_gas;
+    }
+
+    var data_list: ?std.ArrayList(u8) = null;
+    if (calldata.len > 0) {
+        var dl = std.ArrayList(u8){};
+        dl.appendSlice(alloc_mod.get(), calldata) catch return &.{};
+        data_list = dl;
+    }
+
+    ctx.tx.caller = SYSTEM_ADDRESS;
+    ctx.tx.kind = context_mod.TxKind{ .Call = target };
+    ctx.tx.gas_limit = SYSTEM_CALL_GAS;
+    ctx.tx.gas_price = 0;
+    ctx.tx.gas_priority_fee = null;
+    ctx.tx.value = 0;
+    ctx.tx.nonce = 0;
+    ctx.tx.tx_type = 0;
+    ctx.tx.data = data_list;
+    ctx.tx.access_list = context_mod.AccessList{ .items = null };
+    ctx.tx.blob_hashes = null;
+    ctx.tx.authorization_list = null;
+    ctx.tx.chain_id = chain_id;
+
+    var frames = handler_mod.FrameStack.new();
+    const EvmT = handler_mod.EvmFor(@TypeOf(ctx.*).DatabaseType);
+    var evm = EvmT.init(ctx, null, instructions, precompiles, &frames);
+    var result = handler_mod.ExecuteEvm.execute(&evm) catch {
+        ctx.journaled_state.discardTx();
+        if (ctx.tx.data) |*d| d.deinit(alloc_mod.get());
+        ctx.tx.data = null;
+        return &.{};
+    };
+
+    const output = if (result.return_data.len > 0) alloc.dupe(u8, result.return_data) catch &.{} else &.{};
+    result.deinit();
+
+    if (ctx.tx.data) |*d| d.deinit(alloc_mod.get());
+    ctx.tx.data = null;
+
+    if (ctx.journaled_state.inner.evm_state.getPtr(SYSTEM_ADDRESS)) |sa| {
+        if (sa.info.nonce > 0) sa.info.nonce -= 1;
+    }
+
+    return output;
+}

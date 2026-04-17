@@ -44,6 +44,7 @@ pub const TransitionResult = struct {
     accepted_txs: []input.TxInput,
     chain_id: u64,
     bal_hash: ?[32]u8 = null,
+    requests_hash: [32]u8 = [_]u8{0} ** 32,
 };
 
 // ─── Dummy block hash ─────────────────────────────────────────────────────────
@@ -1022,10 +1023,15 @@ pub fn transitionWithContext(
     }
 
     // ── Post-block system calls (EIP-7002, EIP-7251) ──────────────────────────
-    system_calls.applyPostBlockCalls(ctx, &instructions, &precompiles, spec, chain_id);
+    // Capture return data for EIP-7685 requests_hash computation.
+    const post_block_reqs = system_calls.applyPostBlockCallsCapture(arena, ctx, &instructions, &precompiles, spec, chain_id);
 
     // Detect changes from mining reward + withdrawals + post-block calls (all at BAI=N+1)
     if (tracker) |*t| t.detectAndRecord(txs.len + 1, ctx);
+
+    // ── EIP-7685 requests_hash ────────────────────────────────────────────────
+    const deposits = if (primitives.isEnabledIn(spec, .prague)) collectDeposits(arena, receipts.items) else &.{};
+    const requests_hash = computeRequestsHash(deposits, post_block_reqs.withdrawal_requests, post_block_reqs.consolidation_requests);
 
     // ── Extract post-state ────────────────────────────────────────────────────
     const post_alloc = try extractPostState(arena, pre_alloc_in, ctx);
@@ -1055,10 +1061,79 @@ pub fn transitionWithContext(
         .accepted_txs = try accepted_txs.toOwnedSlice(arena),
         .chain_id = chain_id,
         .bal_hash = bal_hash,
+        .requests_hash = requests_hash,
     };
 }
 
 // ─── Post-state extraction ────────────────────────────────────────────────────
+
+// ─── EIP-7685 requests_hash computation ──────────────────────────────────────
+
+/// EIP-6110 deposit contract address.
+const DEPOSIT_CONTRACT_ADDRESS: input.Address = .{
+    0x00, 0x00, 0x00, 0x00, 0x21, 0x9a, 0xb5, 0x40, 0x35, 0x6c,
+    0xbb, 0x83, 0x9c, 0xbe, 0x05, 0x30, 0x3d, 0x77, 0x05, 0xfa,
+};
+
+/// Extract the canonical 192-byte deposit request from one deposit contract log.
+///
+/// The deposit contract emits ABI-encoded (bytes,bytes,bytes,bytes,bytes) with:
+///   pubkey(48) | withdrawal_credentials(32) | amount(8) | signature(96) | index(8)
+/// Total ABI-encoded size: 576 bytes.
+fn depositFromLog(log: *const input.Log, out: *[192]u8) bool {
+    if (log.data.len != 576) return false;
+    @memcpy(out[0..48], log.data[192..240]);    // pubkey
+    @memcpy(out[48..80], log.data[288..320]);   // withdrawal_credentials
+    @memcpy(out[80..88], log.data[352..360]);   // amount (8 bytes LE)
+    @memcpy(out[88..184], log.data[416..512]);  // signature
+    @memcpy(out[184..192], log.data[544..552]); // index (8 bytes LE)
+    return true;
+}
+
+/// Collect all EIP-6110 deposit requests from block receipts.
+/// Returns concatenated 192-byte deposit records (caller owns slice via arena).
+fn collectDeposits(arena: std.mem.Allocator, receipts: []const Receipt) []const u8 {
+    var buf = std.ArrayListUnmanaged(u8){};
+    for (receipts) |*receipt| {
+        for (receipt.logs) |*log| {
+            if (!std.mem.eql(u8, &log.address, &DEPOSIT_CONTRACT_ADDRESS)) continue;
+            var deposit: [192]u8 = undefined;
+            if (depositFromLog(log, &deposit)) {
+                buf.appendSlice(arena, &deposit) catch {};
+            }
+        }
+    }
+    return buf.items;
+}
+
+/// Compute EIP-7685 requests_hash.
+///
+/// Hash = SHA256(SHA256(0x00||deposits) || SHA256(0x01||withdrawals) || SHA256(0x02||consolidations))
+/// where each type is omitted if its data is empty.
+fn computeRequestsHash(
+    deposits: []const u8,
+    withdrawals: []const u8,
+    consolidations: []const u8,
+) [32]u8 {
+    const Sha256 = std.crypto.hash.sha2.Sha256;
+    var outer = Sha256.init(.{});
+    hashRequestType(&outer, 0x00, deposits);
+    hashRequestType(&outer, 0x01, withdrawals);
+    hashRequestType(&outer, 0x02, consolidations);
+    var result: [32]u8 = undefined;
+    outer.final(&result);
+    return result;
+}
+
+fn hashRequestType(outer: *std.crypto.hash.sha2.Sha256, type_byte: u8, data: []const u8) void {
+    if (data.len == 0) return;
+    var inner = std.crypto.hash.sha2.Sha256.init(.{});
+    inner.update(&[_]u8{type_byte});
+    inner.update(data);
+    var inner_hash: [32]u8 = undefined;
+    inner.final(&inner_hash);
+    outer.update(&inner_hash);
+}
 
 fn extractPostState(
     arena: std.mem.Allocator,

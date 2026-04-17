@@ -160,6 +160,11 @@ pub const Chain = struct {
             } else return; // Amsterdam+ block must have a BAL hash
         }
 
+        // ── Requests hash (EIP-7685, Prague+) ─────────────────────────────────
+        if (hdr.requests_hash) |expected_rh| {
+            if (!std.mem.eql(u8, &result.requests_hash, &expected_rh)) return;
+        }
+
         // ── Commit ────────────────────────────────────────────────────────────
         self.current_alloc = result.post_alloc;
         const extra_data_copy = alloc.dupe(u8, hdr.extra_data) catch &.{};

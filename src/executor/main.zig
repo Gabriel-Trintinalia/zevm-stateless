@@ -284,6 +284,7 @@ pub const ExecuteBlockResult = struct {
     post_alloc: std.AutoHashMapUnmanaged(types.Address, types.AllocAccount),
     receipts: []transition_mod.Receipt,
     bal_hash: ?types.Hash = null,
+    requests_hash: [32]u8 = [_]u8{0} ** 32,
 };
 
 pub fn executeBlockFromAlloc(
@@ -306,6 +307,7 @@ pub fn executeBlockFromAlloc(
         .post_alloc = result.alloc,
         .receipts = result.receipts,
         .bal_hash = result.bal_hash,
+        .requests_hash = result.requests_hash,
     };
 }
 
