@@ -321,10 +321,16 @@ const BaTracker = struct {
         while (addr_it.next()) |addr_ptr| {
             const addr = addr_ptr.*;
 
-            // Exclude SYSTEM_ADDRESS unless it has a non-zero final balance
+            // Exclude SYSTEM_ADDRESS if it has no actual changes or reads.
+            // The pre-block system call bumps its nonce then patches it back — that
+            // "touch" must not make it appear in the BAL. But if it receives a
+            // withdrawal (or any other state change), it should be included.
             if (std.mem.eql(u8, &addr, &SYSTEM_ADDRESS)) {
-                const final = self.committed.get(addr) orelse KnownAcct{};
-                if (final.balance == 0) continue;
+                const has_changes = self.bal_chg.contains(addr) or
+                    self.nonce_chg.contains(addr) or
+                    self.code_chg.contains(addr) or
+                    self.slot_chg.contains(addr);
+                if (!has_changes and storage_reads.get(addr) == null) continue;
             }
 
             // Build storage_changes sorted by slot

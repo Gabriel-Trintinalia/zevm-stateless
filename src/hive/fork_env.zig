@@ -26,24 +26,26 @@ pub const ForkSchedule = struct {
     chain_id: u64 = 1,
 
     pub fn specAt(self: ForkSchedule, block: u64, ts: u64) primitives.SpecId {
-        if (ts >= self.amsterdam_ts) return .amsterdam;
-        if (ts >= self.bpo2_ts) return .bpo2;
-        if (ts >= self.bpo1_ts) return .bpo1;
-        if (ts >= self.osaka_ts) return .osaka;
-        if (ts >= self.prague_ts) return .prague;
-        if (ts >= self.cancun_ts) return .cancun;
-        if (ts >= self.shanghai_ts) return .shanghai;
-        if (block >= self.merge_block) return .merge;
-        if (block >= self.london) return .london;
-        if (block >= self.berlin) return .berlin;
-        if (block >= self.istanbul) return .istanbul;
-        if (block >= self.petersburg) return .petersburg;
-        if (block >= self.constantinople) return .constantinople;
-        if (block >= self.byzantium) return .byzantium;
-        if (block >= self.spurious) return .spurious_dragon;
-        if (block >= self.tangerine) return .tangerine;
-        if (block >= self.dao) return .dao_fork;
-        if (block >= self.homestead) return .homestead;
+        // Guard each check with `!= VERY_HIGH` so that an unconfigured fork
+        // (sentinel = u64::MAX) is never matched even when ts = u64::MAX.
+        if (self.amsterdam_ts != VERY_HIGH and ts >= self.amsterdam_ts) return .amsterdam;
+        if (self.bpo2_ts != VERY_HIGH and ts >= self.bpo2_ts) return .bpo2;
+        if (self.bpo1_ts != VERY_HIGH and ts >= self.bpo1_ts) return .bpo1;
+        if (self.osaka_ts != VERY_HIGH and ts >= self.osaka_ts) return .osaka;
+        if (self.prague_ts != VERY_HIGH and ts >= self.prague_ts) return .prague;
+        if (self.cancun_ts != VERY_HIGH and ts >= self.cancun_ts) return .cancun;
+        if (self.shanghai_ts != VERY_HIGH and ts >= self.shanghai_ts) return .shanghai;
+        if (self.merge_block != VERY_HIGH and block >= self.merge_block) return .merge;
+        if (self.london != VERY_HIGH and block >= self.london) return .london;
+        if (self.berlin != VERY_HIGH and block >= self.berlin) return .berlin;
+        if (self.istanbul != VERY_HIGH and block >= self.istanbul) return .istanbul;
+        if (self.petersburg != VERY_HIGH and block >= self.petersburg) return .petersburg;
+        if (self.constantinople != VERY_HIGH and block >= self.constantinople) return .constantinople;
+        if (self.byzantium != VERY_HIGH and block >= self.byzantium) return .byzantium;
+        if (self.spurious != VERY_HIGH and block >= self.spurious) return .spurious_dragon;
+        if (self.tangerine != VERY_HIGH and block >= self.tangerine) return .tangerine;
+        if (self.dao != VERY_HIGH and block >= self.dao) return .dao_fork;
+        if (self.homestead != VERY_HIGH and block >= self.homestead) return .homestead;
         return .frontier;
     }
 };
