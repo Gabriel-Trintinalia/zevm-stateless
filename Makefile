@@ -1,4 +1,4 @@
-SPEC_TEST_VERSION = bal@v5.5.1
+SPEC_TEST_VERSION = bal@v5.6.1
 SPEC_TEST_DIR = spec-tests
 
 ZIG_BUILD_CMD = zig build
