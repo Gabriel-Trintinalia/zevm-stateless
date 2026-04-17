@@ -1024,13 +1024,13 @@ pub fn transitionWithContext(
 
     // ── Post-block system calls (EIP-7002, EIP-7251) ──────────────────────────
     // Capture return data for EIP-7685 requests_hash computation.
-    const post_block_reqs = system_calls.applyPostBlockCallsCapture(arena, ctx, &instructions, &precompiles, spec, chain_id);
+    const post_block_reqs = try system_calls.applyPostBlockCallsCapture(arena, ctx, &instructions, &precompiles, spec, chain_id);
 
     // Detect changes from mining reward + withdrawals + post-block calls (all at BAI=N+1)
     if (tracker) |*t| t.detectAndRecord(txs.len + 1, ctx);
 
     // ── EIP-7685 requests_hash ────────────────────────────────────────────────
-    const deposits = if (primitives.isEnabledIn(spec, .prague)) collectDeposits(arena, receipts.items) else &.{};
+    const deposits = if (primitives.isEnabledIn(spec, .prague)) try collectDeposits(arena, receipts.items) else &.{};
     const requests_hash = computeRequestsHash(deposits, post_block_reqs.withdrawal_requests, post_block_reqs.consolidation_requests);
 
     // ── Extract post-state ────────────────────────────────────────────────────
@@ -1075,32 +1075,43 @@ const DEPOSIT_CONTRACT_ADDRESS: input.Address = .{
     0xbb, 0x83, 0x9c, 0xbe, 0x05, 0x30, 0x3d, 0x77, 0x05, 0xfa,
 };
 
+/// keccak256("DepositEvent(bytes,bytes,bytes,bytes,bytes)")
+const DEPOSIT_EVENT_TOPIC: input.Hash = .{
+    0x64, 0x9b, 0xbc, 0x62, 0xd0, 0xe3, 0x13, 0x42, 0xaf, 0xea,
+    0x4e, 0x5c, 0xd8, 0x2d, 0x40, 0x49, 0xe7, 0xe1, 0xee, 0x91,
+    0x2f, 0xc0, 0x88, 0x9a, 0xa7, 0x90, 0x80, 0x3b, 0xe3, 0x90,
+    0x38, 0xc5,
+};
+
 /// Extract the canonical 192-byte deposit request from one deposit contract log.
 ///
 /// The deposit contract emits ABI-encoded (bytes,bytes,bytes,bytes,bytes) with:
 ///   pubkey(48) | withdrawal_credentials(32) | amount(8) | signature(96) | index(8)
 /// Total ABI-encoded size: 576 bytes.
-fn depositFromLog(log: *const input.Log, out: *[192]u8) bool {
-    if (log.data.len != 576) return false;
+fn depositFromLog(log: *const input.Log, out: *[192]u8) error{InvalidDepositEventLayout}!void {
+    if (log.data.len != 576) return error.InvalidDepositEventLayout;
     @memcpy(out[0..48], log.data[192..240]);    // pubkey
     @memcpy(out[48..80], log.data[288..320]);   // withdrawal_credentials
     @memcpy(out[80..88], log.data[352..360]);   // amount (8 bytes LE)
     @memcpy(out[88..184], log.data[416..512]);  // signature
     @memcpy(out[184..192], log.data[544..552]); // index (8 bytes LE)
-    return true;
 }
 
 /// Collect all EIP-6110 deposit requests from block receipts.
 /// Returns concatenated 192-byte deposit records (caller owns slice via arena).
-fn collectDeposits(arena: std.mem.Allocator, receipts: []const Receipt) []const u8 {
+/// Only processes logs from the deposit contract that have the DepositEvent topic.
+/// Returns error.InvalidDepositEventLayout if such a log has the wrong data length.
+fn collectDeposits(arena: std.mem.Allocator, receipts: []const Receipt) error{InvalidDepositEventLayout}![]const u8 {
     var buf = std.ArrayListUnmanaged(u8){};
     for (receipts) |*receipt| {
         for (receipt.logs) |*log| {
             if (!std.mem.eql(u8, &log.address, &DEPOSIT_CONTRACT_ADDRESS)) continue;
+            // Only process logs that carry the DepositEvent signature topic.
+            // Other log types emitted by the deposit contract are ignored.
+            if (log.topics.len == 0 or !std.mem.eql(u8, &log.topics[0], &DEPOSIT_EVENT_TOPIC)) continue;
             var deposit: [192]u8 = undefined;
-            if (depositFromLog(log, &deposit)) {
-                buf.appendSlice(arena, &deposit) catch {};
-            }
+            try depositFromLog(log, &deposit);
+            buf.appendSlice(arena, &deposit) catch {};
         }
     }
     return buf.items;

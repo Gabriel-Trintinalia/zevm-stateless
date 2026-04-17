@@ -201,6 +201,8 @@ pub const PostBlockRequestBytes = struct {
 /// Like applyPostBlockCalls but captures and returns the raw output bytes from
 /// each system contract so the caller can compute the EIP-7685 requests_hash.
 /// Caller owns the returned slices (allocated with `alloc`).
+/// Returns error.SystemContractCallFailed if any post-block system contract
+/// call reverts, halts, or runs out of gas (per EIP-7685: such blocks are invalid).
 pub fn applyPostBlockCallsCapture(
     alloc: std.mem.Allocator,
     ctx: anytype,
@@ -208,16 +210,17 @@ pub fn applyPostBlockCallsCapture(
     precompiles: *handler_mod.Precompiles,
     spec: primitives.SpecId,
     chain_id: u64,
-) PostBlockRequestBytes {
+) error{SystemContractCallFailed}!PostBlockRequestBytes {
     if (!primitives.isEnabledIn(spec, .prague)) return .{ .withdrawal_requests = &.{}, .consolidation_requests = &.{} };
     return .{
-        .withdrawal_requests = runSystemCallCapture(alloc, ctx, instructions, precompiles, EIP7002_ADDRESS, &.{}, chain_id),
-        .consolidation_requests = runSystemCallCapture(alloc, ctx, instructions, precompiles, EIP7251_ADDRESS, &.{}, chain_id),
+        .withdrawal_requests = try runSystemCallCapture(alloc, ctx, instructions, precompiles, EIP7002_ADDRESS, &.{}, chain_id),
+        .consolidation_requests = try runSystemCallCapture(alloc, ctx, instructions, precompiles, EIP7251_ADDRESS, &.{}, chain_id),
     };
 }
 
 /// Like runSystemCall but returns a caller-owned copy of the return data.
-/// Returns an empty slice on any error or if the contract is not deployed.
+/// Returns an empty slice if the contract is not deployed.
+/// Returns error.SystemContractCallFailed if the call reverts, halts, or runs out of gas.
 fn runSystemCallCapture(
     alloc: std.mem.Allocator,
     ctx: anytype,
@@ -226,7 +229,7 @@ fn runSystemCallCapture(
     target: input.Address,
     calldata: []const u8,
     chain_id: u64,
-) []const u8 {
+) error{SystemContractCallFailed}![]const u8 {
     const SYSTEM_CALL_GAS: u64 = 30_000_000 + 21_000;
 
     const account_load = ctx.journaled_state.loadAccount(target) catch {
@@ -284,8 +287,15 @@ fn runSystemCallCapture(
         ctx.journaled_state.discardTx();
         if (ctx.tx.data) |*d| d.deinit(alloc_mod.get());
         ctx.tx.data = null;
-        return &.{};
+        return error.SystemContractCallFailed;
     };
+
+    if (result.status != .Success) {
+        result.deinit();
+        if (ctx.tx.data) |*d| d.deinit(alloc_mod.get());
+        ctx.tx.data = null;
+        return error.SystemContractCallFailed;
+    }
 
     const output = if (result.return_data.len > 0) alloc.dupe(u8, result.return_data) catch &.{} else &.{};
     result.deinit();
