@@ -123,7 +123,8 @@ const BaTracker = struct {
             if (acct.status.loaded_as_not_existing and !acct.status.touched) continue;
 
             // Same-tx-created-and-selfdestructed (ephemeral) account: per EIP-7928 spec's
-            // destroy_storage(), storage writes become reads and all other changes are suppressed.
+            // destroy_storage(), storage writes become reads. Nonce/code changes are suppressed,
+            // but balance must still be recorded if the pre-existing balance changed (ETH transferred out).
             if (acct.status.self_destructed) {
                 var stor_it = acct.storage.iterator();
                 while (stor_it.next()) |se| {
@@ -131,6 +132,24 @@ const BaTracker = struct {
                     const sm = self.selfdestruct_reads.getOrPut(a, addr) catch continue;
                     if (!sm.found_existing) sm.value_ptr.* = .{};
                     sm.value_ptr.*.put(a, se.key_ptr.*, {}) catch {};
+                }
+                // Record balance change if pre-existing balance was nonzero (ETH transferred out).
+                const known = blk: {
+                    if (self.committed.get(addr)) |k| break :blk k;
+                    const pre = ctx.journaled_state.database.basic(addr) catch null;
+                    const k: KnownAcct = if (pre) |p| .{
+                        .balance = p.balance,
+                        .nonce = p.nonce,
+                        .code_hash = p.code_hash,
+                    } else KnownAcct{};
+                    self.committed.put(self.alloc, addr, k) catch {};
+                    break :blk k;
+                };
+                if (acct.info.balance != known.balance) {
+                    const entry = self.bal_chg.getOrPutValue(a, addr, .{}) catch {
+                        continue;
+                    };
+                    entry.value_ptr.*.append(a, bal_mod.BaiU256{ .bai = bai, .value = acct.info.balance }) catch {};
                 }
                 continue;
             }
@@ -1096,10 +1115,10 @@ const DEPOSIT_EVENT_TOPIC: input.Hash = .{
 /// Total ABI-encoded size: 576 bytes.
 fn depositFromLog(log: *const input.Log, out: *[192]u8) error{InvalidDepositEventLayout}!void {
     if (log.data.len != 576) return error.InvalidDepositEventLayout;
-    @memcpy(out[0..48], log.data[192..240]);    // pubkey
-    @memcpy(out[48..80], log.data[288..320]);   // withdrawal_credentials
-    @memcpy(out[80..88], log.data[352..360]);   // amount (8 bytes LE)
-    @memcpy(out[88..184], log.data[416..512]);  // signature
+    @memcpy(out[0..48], log.data[192..240]); // pubkey
+    @memcpy(out[48..80], log.data[288..320]); // withdrawal_credentials
+    @memcpy(out[80..88], log.data[352..360]); // amount (8 bytes LE)
+    @memcpy(out[88..184], log.data[416..512]); // signature
     @memcpy(out[184..192], log.data[544..552]); // index (8 bytes LE)
 }
 

@@ -157,7 +157,7 @@ pub const Chain = struct {
         if (hdr.block_access_list_hash) |expected_bal_hash| {
             if (result.bal_hash) |computed_bal_hash| {
                 if (!std.mem.eql(u8, &computed_bal_hash, &expected_bal_hash)) return;
-            } else return; // Amsterdam+ block must have a BAL hash
+            } else return;
         }
 
         // ── Requests hash (EIP-7685, Prague+) ─────────────────────────────────

@@ -237,6 +237,9 @@ pub fn parseEnv(alloc: std.mem.Allocator, json_text: []const u8) !Env {
     if (obj.get("parentBeaconBlockRoot")) |v| {
         if (jsonStr(v)) |s| env.parent_beacon_block_root = hexToHash(s) catch null;
     }
+    if (obj.get("parentHash")) |v| {
+        if (jsonStr(v)) |s| env.parent_hash = hexToHash(s) catch null;
+    }
 
     // blockHashes: {"0x1": "0xhash", ...} or {"1": "0xhash", ...}
     if (obj.get("blockHashes")) |bhv| {
