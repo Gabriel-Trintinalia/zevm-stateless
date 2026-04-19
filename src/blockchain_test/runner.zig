@@ -244,6 +244,10 @@ pub fn runFixture(
             const expected_block_state_root = json_helpers.hexToHash(json_helpers.getString(bh, "stateRoot") orelse "") catch [_]u8{0} ** 32;
             const expected_block_receipts_root = json_helpers.hexToHash(json_helpers.getString(bh, "receiptTrie") orelse "") catch [_]u8{0} ** 32;
             const expected_block_hash = json_helpers.hexToHash(json_helpers.getString(bh, "hash") orelse "") catch [_]u8{0} ** 32;
+            const expected_bal_hash: ?Hash = blk: {
+                const s = json_helpers.getString(bh, "blockAccessListHash") orelse break :blk null;
+                break :blk json_helpers.hexToHash(s) catch null;
+            };
 
             // Decode block RLP → raw transaction bytes.
             const rlp_hex = switch (block.get("rlp") orelse continue) {
@@ -318,6 +322,10 @@ pub fn runFixture(
 
             const state_ok = std.mem.eql(u8, &post_state_root, &expected_block_state_root);
             const receipts_ok = std.mem.eql(u8, &receipts_root, &expected_block_receipts_root);
+            const bal_ok = if (expected_bal_hash) |exp|
+                if (result.bal_hash) |got| std.mem.eql(u8, &got, &exp) else false
+            else
+                true;
 
             if (expect_exception_str) |expected| {
                 // No txs were rejected. For BlockException, the roots should not match.
@@ -336,7 +344,7 @@ pub fn runFixture(
                     }
                 }
                 // Do not advance chain for expected-exception blocks.
-            } else if (state_ok and receipts_ok) {
+            } else if (state_ok and receipts_ok and bal_ok) {
                 // Commit: thread state to next block.
                 chain_alloc = result.post_alloc;
                 last_valid_hash = expected_block_hash;
@@ -351,7 +359,7 @@ pub fn runFixture(
                 test_failed = true;
 
                 if (!quiet) {
-                    std.debug.print("FAIL {s} ReceiptsOK={} StateOK={}\n", .{ test_name, receipts_ok, state_ok });
+                    std.debug.print("FAIL {s} ReceiptsOK={} StateOK={} BalOK={}\n", .{ test_name, receipts_ok, state_ok, bal_ok });
                 }
                 if (!quiet and json_output) {
                     var out = std.ArrayListUnmanaged(u8){};

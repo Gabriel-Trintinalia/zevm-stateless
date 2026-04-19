@@ -145,7 +145,12 @@ const BaTracker = struct {
                     self.committed.put(self.alloc, addr, k) catch {};
                     break :blk k;
                 };
-                if (acct.info.balance != known.balance) {
+                // Only record a balance change if the account had pre-existing ETH that was
+                // transferred out (known.balance > 0 → balance decreased to some new value).
+                // Ephemeral accounts (created and destroyed in the same tx, known.balance = 0)
+                // may receive ETH after their SELFDESTRUCT (e.g. as a selfdestruct target),
+                // but that ETH is immediately burned — don't record it as a balance change.
+                if (known.balance != 0 and acct.info.balance != known.balance) {
                     const entry = self.bal_chg.getOrPutValue(a, addr, .{}) catch {
                         continue;
                     };
@@ -244,6 +249,15 @@ const BaTracker = struct {
             const addr = e.key_ptr.*;
             const acct = e.value_ptr.*;
             if (acct.status.loaded_as_not_existing and !acct.status.touched) continue;
+            // Selfdestructed accounts: nonce/code/storage are gone. Commit the live balance
+            // (which may be non-zero if ETH arrived after the SELFDESTRUCT opcode) so that
+            // subsequent BAIs don't spuriously re-record the same balance. Storage is cleared
+            // so a re-creation in the next tx is detected via nonce/code changes.
+            if (acct.status.self_destructed) {
+                self.committed.put(a, addr, KnownAcct{ .balance = acct.info.balance }) catch {};
+                if (self.committed_storage.getPtr(addr)) |sm| sm.clearRetainingCapacity();
+                continue;
+            }
             self.committed.put(a, addr, KnownAcct{
                 .balance = acct.info.balance,
                 .nonce = acct.info.nonce,
