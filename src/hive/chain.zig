@@ -10,6 +10,8 @@ const executor = @import("executor");
 const fork_mod = @import("hardfork");
 const tx_decode_mod = @import("executor_tx_decode");
 const rlp_dec = @import("mpt").rlp;
+const mpt_builder = @import("mpt_builder");
+const rlp_enc = @import("executor_rlp_encode");
 const ForkSchedule = @import("fork_env.zig").ForkSchedule;
 
 const Address = types.Address;
@@ -22,6 +24,7 @@ pub const StoredHeader = struct {
     coinbase: Address,
     state_root: Hash,
     gas_limit: u64,
+    gas_used: u64 = 0,
     timestamp: u64,
     extra_data: []const u8,
     base_fee: ?u256 = null,
@@ -134,9 +137,16 @@ pub const Chain = struct {
         const parent_hdr = self.headers.items[self.headers.items.len - 1];
         env.parent_timestamp = parent_hdr.timestamp;
         env.parent_gas_limit = parent_hdr.gas_limit;
+        env.parent_gas_used = parent_hdr.gas_used;
         if (parent_hdr.base_fee) |pbf| env.parent_base_fee = @as(u64, @intCast(pbf));
         if (parent_hdr.excess_blob_gas) |pebg| env.parent_excess_blob_gas = pebg;
         if (parent_hdr.blob_gas_used) |pbgu| env.parent_blob_gas_used = pbgu;
+
+        // ── Validate withdrawals root (EIP-4895, Shanghai+) ──────────────────
+        if (hdr.withdrawals_root) |expected_root| {
+            const computed_root = try computeWithdrawalsRoot(alloc, withdrawals);
+            if (!std.mem.eql(u8, &computed_root, &expected_root)) return;
+        }
 
         // ── Execute (includes validation, transition, and root computation) ────
         const result = executor.executeBlockFromAlloc(
@@ -174,6 +184,7 @@ pub const Chain = struct {
             .coinbase = hdr.coinbase,
             .state_root = hdr.state_root,
             .gas_limit = hdr.gas_limit,
+            .gas_used = hdr.gas_used,
             .timestamp = hdr.timestamp,
             .extra_data = extra_data_copy,
             .base_fee = hdr.base_fee,
@@ -378,6 +389,24 @@ fn cloneAllocMap(arena: std.mem.Allocator, src: AllocMap) !AllocMap {
         try dst.put(arena, entry.key_ptr.*, acct);
     }
     return dst;
+}
+
+// ─── Withdrawals root ─────────────────────────────────────────────────────────
+
+fn computeWithdrawalsRoot(alloc: std.mem.Allocator, withdrawals: []types.Withdrawal) ![32]u8 {
+    if (withdrawals.len == 0) return mpt_builder.EMPTY_TRIE_HASH;
+    const items = try alloc.alloc(mpt_builder.KV, withdrawals.len);
+    for (withdrawals, 0..) |wd, i| {
+        items[i].key = try rlp_enc.encodeU64(alloc, i);
+        const fields = [_][]const u8{
+            try rlp_enc.encodeU64(alloc, wd.index),
+            try rlp_enc.encodeU64(alloc, wd.validator_index),
+            try rlp_enc.encodeBytes(alloc, &wd.address),
+            try rlp_enc.encodeU64(alloc, wd.amount),
+        };
+        items[i].value = try rlp_enc.encodeList(alloc, &fields);
+    }
+    return mpt_builder.trieRoot(alloc, items);
 }
 
 // ─── Primitive helpers ────────────────────────────────────────────────────────
